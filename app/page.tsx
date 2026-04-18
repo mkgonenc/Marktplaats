@@ -1,4 +1,3 @@
-
 'use client'
 import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
@@ -48,9 +47,12 @@ export default function Home() {
   const [aiLoading, setAiLoading] = useState(false)
   const [verifyEmailSent, setVerifyEmailSent] = useState(false)
   const [favorites, setFavorites] = useState<number[]>([])
-  const [idFile, setIdFile] = useState<File | null>(null)
+  const [idStep1, setIdStep1] = useState<File | null>(null)
+  const [idStep2, setIdStep2] = useState<File | null>(null)
+  const [idStep3, setIdStep3] = useState<File | null>(null)
   const [idUploading, setIdUploading] = useState(false)
   const [idSuccess, setIdSuccess] = useState(false)
+  const [idError, setIdError] = useState('')
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -72,7 +74,7 @@ export default function Home() {
   async function fetchPending() {
     const { data } = await supabase.from('ads').select('*').eq('status', 'wachtrij')
     setPendingAds(data || [])
-    const { data: ids } = await supabase.from('profiles').select('*').not('id_image', 'is', null).eq('id_verified', false)
+    const { data: ids } = await supabase.from('profiles').select('*').eq('id_status', 'ingediend')
     setPendingIds(ids || [])
   }
 
@@ -111,7 +113,7 @@ export default function Home() {
     const { data, error } = await supabase.auth.signUp({ email: regForm.email, password: regForm.password })
     if (error) { setAuthErr(error.message); return }
     if (data.user) {
-      await supabase.from('profiles').insert({ id: data.user.id, name: regForm.name, role: 'user', phone: regForm.phone })
+      await supabase.from('profiles').insert({ id: data.user.id, name: regForm.name, role: 'user', phone: regForm.phone, id_status: 'niet_ingediend' })
       setVerifyEmailSent(true)
     }
   }
@@ -121,78 +123,52 @@ export default function Home() {
     setUser(null); setProfile(null); setPage('home')
   }
 
-  function checkBannedWords(text: string) {
-    const found = BANNED_WORDS.filter(w => text.toLowerCase().includes(w))
-    return found
+  async function uploadFile(file: File, prefix: string): Promise<string | null> {
+    const ext = file.name.split('.').pop()
+    const path = `${prefix}-${user.id}-${Date.now()}.${ext}`
+    const { data } = await supabase.storage.from('advertenties').upload(path, file)
+    if (!data) return null
+    const { data: urlData } = supabase.storage.from('advertenties').getPublicUrl(path)
+    return urlData.publicUrl
   }
 
-  async function moderateImageWithAI(file: File): Promise<boolean> {
-    return new Promise(resolve => {
-      const reader = new FileReader()
-      reader.onload = async (e) => {
-        const base64 = (e.target?.result as string).split(',')[1]
-        try {
-          const res = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: 'claude-sonnet-4-20250514',
-              max_tokens: 100,
-              messages: [{
-                role: 'user',
-                content: [
-                  { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } },
-                  { type: 'text', text: 'Is deze afbeelding geschikt voor een marktplaats? Antwoord alleen met JA of NEE.' }
-                ]
-              }]
-            })
-          })
-          const data = await res.json()
-          const answer = data.content?.[0]?.text?.toUpperCase() || 'JA'
-          resolve(answer.includes('JA'))
-        } catch { resolve(true) }
-      }
-      reader.readAsDataURL(file)
-    })
+  async function submitIdVerification() {
+    if (!idStep1 || !idStep2 || !idStep3) { setIdError('Upload alle 3 de foto\'s om door te gaan.'); return }
+    setIdError('')
+    setIdUploading(true)
+    const url1 = await uploadFile(idStep1, 'id-doc')
+    const url2 = await uploadFile(idStep2, 'id-selfie')
+    const url3 = await uploadFile(idStep3, 'id-proof')
+    if (!url1 || !url2 || !url3) { setIdError('Upload mislukt. Probeer opnieuw.'); setIdUploading(false); return }
+    await supabase.from('profiles').update({ id_step1: url1, id_step2: url2, id_step3: url3, id_status: 'ingediend' }).eq('id', user.id)
+    fetchProfile(user.id)
+    setIdSuccess(true)
+    setIdUploading(false)
+  }
+
+  function checkBannedWords(text: string) {
+    return BANNED_WORDS.filter(w => text.toLowerCase().includes(w))
   }
 
   async function submitAd() {
     if (!newAd.title || !newAd.price || !newAd.location) return
+    if (profile?.id_status !== 'goedgekeurd') {
+      setAdWarning('Je moet eerst je identiteit verifiëren voor je een advertentie kan plaatsen. Ga naar Mijn Profiel.')
+      return
+    }
     const banned = checkBannedWords(newAd.title + ' ' + newAd.description)
-    if (banned.length > 0) { setAdWarning(`Verboden woorden gevonden: ${banned.join(', ')}. Pas je advertentie aan.`); return }
+    if (banned.length > 0) { setAdWarning(`Verboden woorden gevonden: ${banned.join(', ')}`); return }
     setAdWarning('')
     setImgUploading(true)
     let imgUrl = `https://placehold.co/300x200/e6f1fb/185fa5?text=${encodeURIComponent(newAd.title.slice(0, 8))}`
     if (imgFile) {
-      const safe = await moderateImageWithAI(imgFile)
-      if (!safe) { setImgUploading(false); setAdWarning('Afbeelding afgekeurd door AI moderatie. Gebruik een andere afbeelding.'); return }
-      const ext = imgFile.name.split('.').pop()
-      const path = `${user.id}-${Date.now()}.${ext}`
-      const { data: upData } = await supabase.storage.from('advertenties').upload(path, imgFile)
-      if (upData) {
-        const { data: urlData } = supabase.storage.from('advertenties').getPublicUrl(path)
-        imgUrl = urlData.publicUrl
-      }
+      const url = await uploadFile(imgFile, 'ad')
+      if (url) imgUrl = url
     }
     setImgUploading(false)
     await supabase.from('ads').insert({ ...newAd, price: Number(newAd.price), status: 'wachtrij', seller_id: user.id, seller_name: profile?.name || user.email, img: imgUrl })
     setAdSuccess(true)
     setTimeout(() => { setAdSuccess(false); setNewAd({ title: '', price: '', category: 'Elektronica', location: '', description: '' }); setImgFile(null); setPage('home') }, 2500)
-  }
-
-  async function uploadIdDocument() {
-    if (!idFile || !user) return
-    setIdUploading(true)
-    const ext = idFile.name.split('.').pop()
-    const path = `id-${user.id}-${Date.now()}.${ext}`
-    const { data: upData } = await supabase.storage.from('advertenties').upload(path, idFile)
-    if (upData) {
-      const { data: urlData } = supabase.storage.from('advertenties').getPublicUrl(path)
-      await supabase.from('profiles').update({ id_image: urlData.publicUrl }).eq('id', user.id)
-      fetchProfile(user.id)
-      setIdSuccess(true)
-    }
-    setIdUploading(false)
   }
 
   async function approveAd(id: number) {
@@ -204,11 +180,11 @@ export default function Home() {
   }
 
   async function approveId(userId: string) {
-    await supabase.from('profiles').update({ id_verified: true }).eq('id', userId); fetchPending()
+    await supabase.from('profiles').update({ id_verified: true, id_status: 'goedgekeurd' }).eq('id', userId); fetchPending()
   }
 
   async function rejectId(userId: string) {
-    await supabase.from('profiles').update({ id_image: null }).eq('id', userId); fetchPending()
+    await supabase.from('profiles').update({ id_status: 'afgewezen', id_step1: null, id_step2: null, id_step3: null }).eq('id', userId); fetchPending()
   }
 
   async function sendMsg() {
@@ -266,6 +242,14 @@ export default function Home() {
   const btnR: any = { ...btn, background: '#e24b4a', color: '#fff', border: 'none' }
   const btnG: any = { ...btn, background: '#3b6d11', color: '#fff', border: 'none' }
 
+  const idStatusBadge = () => {
+    if (!profile) return null
+    if (profile.id_status === 'goedgekeurd') return <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ ID Geverifieerd</span>
+    if (profile.id_status === 'ingediend') return <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>⏳ In behandeling</span>
+    if (profile.id_status === 'afgewezen') return <span style={{ background: '#fff5f5', color: '#a32d2d', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✗ Afgekeurd</span>
+    return <span style={{ background: '#f0f0f0', color: '#888', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>Niet geverifieerd</span>
+  }
+
   return (
     <div style={{ fontFamily: 'sans-serif', minHeight: '100vh', background: '#f5f5f5', color: '#1a1a1a' }}>
       <nav style={{ background: '#fff', borderBottom: '1px solid #eee', padding: '0 20px', display: 'flex', alignItems: 'center', gap: 12, height: 52, flexWrap: 'wrap' }}>
@@ -281,8 +265,7 @@ export default function Home() {
         {user && <button style={btn} onClick={() => setPage('messages')}>Berichten</button>}
         {user ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {profile?.id_verified && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ Geverifieerd</span>}
-            {user.email_confirmed_at && !profile?.id_verified && <span style={{ background: '#e6f1fb', color: '#185fa5', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✉ E-mail OK</span>}
+            {idStatusBadge()}
             <button style={btn} onClick={logout}>{profile?.name || user.email} – Uitloggen</button>
           </div>
         ) : <button style={btnP} onClick={() => setPage('auth')}>Inloggen</button>}
@@ -342,7 +325,7 @@ export default function Home() {
                 {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}
               </div>
               {showReview && (
-                <div style={{ marginTop: 16, padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
+                <div style={{ marginTop: 16, padding: 16, background: '#f9f9f9', borderRadius: 8 }}>
                   <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Review schrijven</p>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                     {[1,2,3,4,5].map(n => <button key={n} onClick={() => setNewReview(p => ({ ...p, rating: n }))} style={{ ...btn, background: newReview.rating >= n ? '#ef9f27' : '#fff', color: newReview.rating >= n ? '#fff' : '#1a1a1a', padding: '4px 10px' }}>★</button>)}
@@ -355,7 +338,7 @@ export default function Home() {
                 </div>
               )}
               {showReport && (
-                <div style={{ marginTop: 16, padding: 16, background: '#fff5f5', borderRadius: 8, border: '1px solid #f09595' }}>
+                <div style={{ marginTop: 16, padding: 16, background: '#fff5f5', borderRadius: 8 }}>
                   <p style={{ margin: '0 0 8px', fontWeight: 600, color: '#a32d2d' }}>Rapporteer advertentie</p>
                   <select style={{ ...inp, marginBottom: 8 }} value={reportReason} onChange={e => setReportReason(e.target.value)}>
                     <option value="">Kies een reden...</option>
@@ -411,7 +394,7 @@ export default function Home() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <input style={inp} placeholder="Naam" value={regForm.name} onChange={e => setRegForm(p => ({ ...p, name: e.target.value }))} />
                   <input style={inp} placeholder="E-mail" value={regForm.email} onChange={e => setRegForm(p => ({ ...p, email: e.target.value }))} />
-                  <input style={inp} placeholder="Telefoonnummer (optioneel)" value={regForm.phone} onChange={e => setRegForm(p => ({ ...p, phone: e.target.value }))} />
+                  <input style={inp} placeholder="Telefoonnummer" value={regForm.phone} onChange={e => setRegForm(p => ({ ...p, phone: e.target.value }))} />
                   <input style={inp} type="password" placeholder="Wachtwoord (min. 6 tekens)" value={regForm.password} onChange={e => setRegForm(p => ({ ...p, password: e.target.value }))} />
                   {authErr && <p style={{ color: '#e24b4a', fontSize: 13 }}>{authErr}</p>}
                   <button style={btnP} onClick={register}>Account aanmaken</button>
@@ -425,36 +408,91 @@ export default function Home() {
         {/* PROFILE */}
         {page === 'profile' && user && <>
           <h2 style={{ fontWeight: 600, marginBottom: 16 }}>Mijn Profiel</h2>
-          <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 24, maxWidth: 560 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
+          <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 24, maxWidth: 600 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
               <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#e6f1fb', color: '#185fa5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 24 }}>{profile?.name?.[0] || '?'}</div>
               <div>
                 <p style={{ margin: 0, fontWeight: 600, fontSize: 18 }}>{profile?.name}</p>
-                <p style={{ margin: 0, fontSize: 13, color: '#888' }}>{user.email}</p>
-                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                  {user.email_confirmed_at && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ E-mail geverifieerd</span>}
-                  {profile?.id_verified && <span style={{ background: '#e6f1fb', color: '#185fa5', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ ID geverifieerd</span>}
-                  {profile?.phone && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>📱 {profile.phone}</span>}
+                <p style={{ margin: '2px 0', fontSize: 13, color: '#888' }}>{user.email}</p>
+                {profile?.phone && <p style={{ margin: '2px 0', fontSize: 13, color: '#888' }}>📱 {profile.phone}</p>}
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                  {user.email_confirmed_at && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ E-mail</span>}
+                  {idStatusBadge()}
                 </div>
               </div>
             </div>
 
-            {/* ID Verificatie */}
-            {!profile?.id_verified && (
-              <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee', marginBottom: 16 }}>
-                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>ID Verificatie</p>
-                <p style={{ margin: '0 0 12px', fontSize: 13, color: '#555' }}>Upload een foto van je identiteitskaart of rijbewijs om een verificatiebadge te krijgen. Je ID wordt alleen door de admin bekeken.</p>
-                {profile?.id_image ? (
+            {/* ID Verificatie sectie */}
+            {profile?.id_status !== 'goedgekeurd' && (
+              <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 20, marginBottom: 20 }}>
+                <h3 style={{ margin: '0 0 8px', fontWeight: 600, fontSize: 16 }}>🔐 Identiteitsverificatie</h3>
+                <p style={{ margin: '0 0 16px', fontSize: 13, color: '#555' }}>
+                  Verifieer je identiteit om advertenties te kunnen plaatsen. Je moet 3 foto's uploaden.
+                </p>
+
+                {profile?.id_status === 'ingediend' && (
                   <div style={{ background: '#faeeda', color: '#854f0b', padding: 12, borderRadius: 8, fontSize: 13 }}>
-                    Je ID is ingediend en wacht op goedkeuring van de admin.
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <input type="file" accept="image/*" onChange={e => setIdFile(e.target.files?.[0] || null)} />
-                    {idSuccess && <p style={{ color: '#3b6d11', fontSize: 13 }}>ID succesvol ingediend!</p>}
-                    <button style={btnP} onClick={uploadIdDocument} disabled={!idFile || idUploading}>{idUploading ? 'Uploading...' : 'ID indienen'}</button>
+                    ⏳ Je verificatie is ingediend en wordt nagekeken door de admin. Dit kan 1-2 werkdagen duren.
                   </div>
                 )}
+
+                {profile?.id_status === 'afgewezen' && (
+                  <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
+                    ✗ Je verificatie is afgekeurd. Dien nieuwe foto's in.
+                  </div>
+                )}
+
+                {(profile?.id_status === 'niet_ingediend' || profile?.id_status === 'afgewezen') && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+                    {/* Stap 1 */}
+                    <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#185fa5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13 }}>1</div>
+                        <p style={{ margin: 0, fontWeight: 600 }}>Foto van EU ID-kaart of Paspoort</p>
+                      </div>
+                      <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>Alleen Europese identiteitsdocumenten zijn toegestaan. Zorg dat alle gegevens duidelijk leesbaar zijn.</p>
+                      <input type="file" accept="image/*" onChange={e => setIdStep1(e.target.files?.[0] || null)} />
+                      {idStep1 && <p style={{ margin: '4px 0 0', fontSize: 12, color: '#3b6d11' }}>✓ {idStep1.name}</p>}
+                    </div>
+
+                    {/* Stap 2 */}
+                    <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#185fa5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13 }}>2</div>
+                        <p style={{ margin: 0, fontWeight: 600 }}>Selfie foto van jezelf</p>
+                      </div>
+                      <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>Maak een duidelijke selfie van je gezicht. Dit wordt vergeleken met je ID-foto om te bevestigen dat jij het bent.</p>
+                      <input type="file" accept="image/*" onChange={e => setIdStep2(e.target.files?.[0] || null)} />
+                      {idStep2 && <p style={{ margin: '4px 0 0', fontSize: 12, color: '#3b6d11' }}>✓ {idStep2.name}</p>}
+                    </div>
+
+                    {/* Stap 3 */}
+                    <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#185fa5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13 }}>3</div>
+                        <p style={{ margin: 0, fontWeight: 600 }}>Foto met recente krant of Belgische/Nederlandse bon</p>
+                      </div>
+                      <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>Houd een recente krant of kassabon van een Belgische of Nederlandse winkel vast. Dit bevestigt dat je je in België of Nederland bevindt.</p>
+                      <input type="file" accept="image/*" onChange={e => setIdStep3(e.target.files?.[0] || null)} />
+                      {idStep3 && <p style={{ margin: '4px 0 0', fontSize: 12, color: '#3b6d11' }}>✓ {idStep3.name}</p>}
+                    </div>
+
+                    {idError && <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13 }}>{idError}</div>}
+
+                    <button style={{ ...btnP, opacity: (!idStep1 || !idStep2 || !idStep3) ? 0.5 : 1 }} onClick={submitIdVerification} disabled={idUploading || !idStep1 || !idStep2 || !idStep3}>
+                      {idUploading ? 'Uploading...' : 'Verificatie indienen'}
+                    </button>
+
+                    {idSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, fontSize: 13 }}>✓ Verificatie succesvol ingediend! De admin bekijkt je documenten.</div>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {profile?.id_status === 'goedgekeurd' && (
+              <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 16, borderRadius: 8, marginBottom: 20, fontSize: 13 }}>
+                ✓ Je identiteit is geverifieerd. Je kan advertenties plaatsen!
               </div>
             )}
 
@@ -481,6 +519,12 @@ export default function Home() {
             <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 16, borderRadius: 8 }}>Advertentie ingediend! Wacht op goedkeuring.</div>
           ) : (
             <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 24, maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {profile?.id_status !== 'goedgekeurd' && (
+                <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13 }}>
+                  ⚠️ Je moet eerst je identiteit verifiëren voor je een advertentie kan plaatsen.
+                  <button style={{ ...btnP, marginLeft: 8, fontSize: 12, padding: '4px 10px' }} onClick={() => setPage('profile')}>Verifieer nu</button>
+                </div>
+              )}
               {adWarning && <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13 }}>{adWarning}</div>}
               <input style={inp} placeholder="Titel*" value={newAd.title} onChange={e => setNewAd(p => ({ ...p, title: e.target.value }))} />
               <input style={inp} type="number" placeholder="Prijs (€)*" value={newAd.price} onChange={e => setNewAd(p => ({ ...p, price: e.target.value }))} />
@@ -493,8 +537,9 @@ export default function Home() {
                 <p style={{ fontSize: 13, color: '#888', margin: '0 0 6px' }}>Foto uploaden:</p>
                 <input type="file" accept="image/*" onChange={e => setImgFile(e.target.files?.[0] || null)} />
               </div>
-              <p style={{ fontSize: 12, color: '#888', margin: 0 }}>Afbeeldingen worden automatisch gecontroleerd door AI. Advertenties worden nagekeken door admin.</p>
-              <button style={btnP} onClick={submitAd} disabled={imgUploading}>{imgUploading ? 'Controleren...' : 'Indienen'}</button>
+              <button style={{ ...btnP, opacity: profile?.id_status !== 'goedgekeurd' ? 0.5 : 1 }} onClick={submitAd} disabled={imgUploading || profile?.id_status !== 'goedgekeurd'}>
+                {imgUploading ? 'Uploading...' : 'Indienen'}
+              </button>
             </div>
           )}
         </>}
@@ -545,18 +590,33 @@ export default function Home() {
 
           {/* ID Verificaties */}
           {pendingIds.length > 0 && <>
-            <h3 style={{ fontWeight: 600 }}>ID Verificaties ({pendingIds.length})</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
+            <h3 style={{ fontWeight: 600 }}>🔐 ID Verificaties ({pendingIds.length})</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
               {pendingIds.map(u => (
-                <div key={u.id} style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 16, display: 'flex', gap: 16, alignItems: 'center' }}>
-                  <img src={u.id_image} alt="ID" style={{ width: 120, height: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
-                  <div style={{ flex: 1 }}>
-                    <p style={{ margin: 0, fontWeight: 600 }}>{u.name}</p>
-                    <p style={{ margin: '2px 0 0', fontSize: 13, color: '#888' }}>ID ingediend voor verificatie</p>
+                <div key={u.id} style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 20 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 600 }}>{u.name}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: 13, color: '#888' }}>{u.phone}</p>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button style={btnG} onClick={() => approveId(u.id)}>Goedkeuren</button>
+                      <button style={btnR} onClick={() => rejectId(u.id)}>Afwijzen</button>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button style={btnG} onClick={() => approveId(u.id)}>Goedkeuren</button>
-                    <button style={btnR} onClick={() => rejectId(u.id)}>Afwijzen</button>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                    <div>
+                      <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#555' }}>1. EU ID / Paspoort</p>
+                      <img src={u.id_step1} alt="ID" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
+                    </div>
+                    <div>
+                      <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#555' }}>2. Selfie</p>
+                      <img src={u.id_step2} alt="Selfie" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
+                    </div>
+                    <div>
+                      <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#555' }}>3. Krant / Bon</p>
+                      <img src={u.id_step3} alt="Bewijs" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
+                    </div>
                   </div>
                 </div>
               ))}
@@ -584,7 +644,7 @@ export default function Home() {
                 </div>
                 {aiLoading && <p style={{ margin: '8px 0 0', fontSize: 13, color: '#888' }}>AI controleert...</p>}
                 {aiCheck && (
-                  <div style={{ marginTop: 12, padding: 12, background: '#f0f7ff', borderRadius: 8, border: '1px solid #b5d4f4', fontSize: 13 }}>
+                  <div style={{ marginTop: 12, padding: 12, background: '#f0f7ff', borderRadius: 8, fontSize: 13 }}>
                     <strong>AI Beoordeling:</strong>
                     <p style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{aiCheck}</p>
                   </div>
@@ -613,7 +673,8 @@ export default function Home() {
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>{u.name}</p>
-                    {u.id_verified && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>✓ ID</span>}
+                    {u.id_status === 'goedgekeurd' && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>✓ ID</span>}
+                    {u.id_status === 'ingediend' && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>⏳ In behandeling</span>}
                   </div>
                   <p style={{ margin: 0, fontSize: 12, color: '#888' }}>{u.role} {u.phone && `· ${u.phone}`}</p>
                 </div>
