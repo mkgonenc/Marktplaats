@@ -333,15 +333,11 @@ async function deleteAd(id: number) {
                   <button style={{ ...btn, color: '#854f0b', border: '1px solid #ef9f27' }} onClick={() => setShowReview(true)}>Review</button>
                   <button style={btnR} onClick={() => setShowReport(true)}>Rapporteer</button>
                 </>}
-                {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}{user && user.id === selectedAd.seller_id && (
-  <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
-)}{user && user.id === selectedAd.seller_id && (
-  <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
+                {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}
 {user && user.id === selectedAd.seller_id && (
   <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
 )}
-)}
-              </div>
+</div>
               {showReview && (
                 <div style={{ marginTop: 16, padding: 16, background: '#f9f9f9', borderRadius: 8 }}>
                   <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Review schrijven</p>
