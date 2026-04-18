@@ -335,6 +335,11 @@ async function deleteAd(id: number) {
                 </>}
                 {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}{user && user.id === selectedAd.seller_id && (
   <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
+)}{user && user.id === selectedAd.seller_id && (
+  <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
+{user && user.id === selectedAd.seller_id && (
+  <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
+)}
 )}
               </div>
               {showReview && (
