@@ -389,7 +389,7 @@ export default function Home() {
                     ✗ Je verificatie is afgekeurd. Dien nieuwe foto's in.
                   </div>
                 )}
-                {(profile?.id_status === 'niet_ingediend' || profile?.id_status === 'afgewezen') && (
+                {(!profile?.id_status || profile?.id_status === 'niet_ingediend' || profile?.id_status === 'afgewezen') && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                     {[
                       { num: 1, title: 'Foto van EU ID-kaart of Paspoort', desc: 'Alleen Europese identiteitsdocumenten. Zorg dat alle gegevens leesbaar zijn.', set: setIdStep1, file: idStep1 },
