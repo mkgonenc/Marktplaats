@@ -1,3 +1,4 @@
+
 'use client'
 import { useEffect, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
@@ -9,6 +10,7 @@ const supabase = createClient(
 
 const CATEGORIES = ['Alle', 'Elektronica', 'Kleding', 'Meubels', 'Voertuigen', 'Sport', 'Tuin', 'Boeken', 'Overig']
 const REPORT_REASONS = ['Oplichting', 'Verboden product', 'Misleidende beschrijving', 'Spam', 'Andere reden']
+const BANNED_WORDS = ['drugs', 'wapen', 'nep', 'fake', 'gestolen', 'illegaal']
 
 export default function Home() {
   const [page, setPage] = useState('home')
@@ -20,18 +22,19 @@ export default function Home() {
   const [catFilter, setCatFilter] = useState('Alle')
   const [maxPrice, setMaxPrice] = useState('')
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
-  const [regForm, setRegForm] = useState({ name: '', email: '', password: '' })
+  const [regForm, setRegForm] = useState({ name: '', email: '', password: '', phone: '' })
   const [authMode, setAuthMode] = useState('login')
   const [authErr, setAuthErr] = useState('')
-  const [newAd, setNewAd] = useState({ title: '', price: '', category: 'Elektronica', location: '', description: '', img: '' })
+  const [newAd, setNewAd] = useState({ title: '', price: '', category: 'Elektronica', location: '', description: '' })
   const [adSuccess, setAdSuccess] = useState(false)
   const [imgFile, setImgFile] = useState<File | null>(null)
   const [imgUploading, setImgUploading] = useState(false)
-  const [favorites, setFavorites] = useState<number[]>([])
+  const [adWarning, setAdWarning] = useState('')
   const [messages, setMessages] = useState<any[]>([])
   const [msgInput, setMsgInput] = useState('')
   const [activeChat, setActiveChat] = useState<any>(null)
   const [pendingAds, setPendingAds] = useState<any[]>([])
+  const [pendingIds, setPendingIds] = useState<any[]>([])
   const [users, setUsers] = useState<any[]>([])
   const [reports, setReports] = useState<any[]>([])
   const [showReport, setShowReport] = useState(false)
@@ -44,13 +47,14 @@ export default function Home() {
   const [aiCheck, setAiCheck] = useState<any>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [verifyEmailSent, setVerifyEmailSent] = useState(false)
+  const [favorites, setFavorites] = useState<number[]>([])
+  const [idFile, setIdFile] = useState<File | null>(null)
+  const [idUploading, setIdUploading] = useState(false)
+  const [idSuccess, setIdSuccess] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) {
-        setUser(data.session.user)
-        fetchProfile(data.session.user.id)
-      }
+      if (data.session) { setUser(data.session.user); fetchProfile(data.session.user.id) }
     })
     fetchAds()
   }, [])
@@ -68,6 +72,8 @@ export default function Home() {
   async function fetchPending() {
     const { data } = await supabase.from('ads').select('*').eq('status', 'wachtrij')
     setPendingAds(data || [])
+    const { data: ids } = await supabase.from('profiles').select('*').not('id_image', 'is', null).eq('id_verified', false)
+    setPendingIds(ids || [])
   }
 
   async function fetchUsers() {
@@ -95,11 +101,7 @@ export default function Home() {
     const { error } = await supabase.auth.signInWithPassword({ email: loginForm.email, password: loginForm.password })
     if (error) { setAuthErr('Ongeldig e-mail of wachtwoord.'); return }
     const { data } = await supabase.auth.getSession()
-    if (data.session) {
-      setUser(data.session.user)
-      fetchProfile(data.session.user.id)
-      setPage('home')
-    }
+    if (data.session) { setUser(data.session.user); fetchProfile(data.session.user.id); setPage('home') }
   }
 
   async function register() {
@@ -109,7 +111,7 @@ export default function Home() {
     const { data, error } = await supabase.auth.signUp({ email: regForm.email, password: regForm.password })
     if (error) { setAuthErr(error.message); return }
     if (data.user) {
-      await supabase.from('profiles').insert({ id: data.user.id, name: regForm.name, role: 'user' })
+      await supabase.from('profiles').insert({ id: data.user.id, name: regForm.name, role: 'user', phone: regForm.phone })
       setVerifyEmailSent(true)
     }
   }
@@ -119,35 +121,51 @@ export default function Home() {
     setUser(null); setProfile(null); setPage('home')
   }
 
-  async function checkAdWithAI(ad: any) {
-    setAiLoading(true)
-    setAiCheck(null)
-    try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 300,
-          messages: [{
-            role: 'user',
-            content: `Beoordeel deze marktplaats advertentie op veiligheid en legitimiteit. Geef een korte beoordeling in het Nederlands met: 1) Veilig of Verdacht, 2) Reden, 3) Aanbeveling voor admin. Advertentie: Titel: ${ad.title}, Prijs: €${ad.price}, Beschrijving: ${ad.description}`
-          }]
-        })
-      })
-      const data = await res.json()
-      setAiCheck(data.content?.[0]?.text || 'Geen beoordeling beschikbaar.')
-    } catch {
-      setAiCheck('AI controle niet beschikbaar.')
-    }
-    setAiLoading(false)
+  function checkBannedWords(text: string) {
+    const found = BANNED_WORDS.filter(w => text.toLowerCase().includes(w))
+    return found
+  }
+
+  async function moderateImageWithAI(file: File): Promise<boolean> {
+    return new Promise(resolve => {
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        const base64 = (e.target?.result as string).split(',')[1]
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-20250514',
+              max_tokens: 100,
+              messages: [{
+                role: 'user',
+                content: [
+                  { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } },
+                  { type: 'text', text: 'Is deze afbeelding geschikt voor een marktplaats? Antwoord alleen met JA of NEE.' }
+                ]
+              }]
+            })
+          })
+          const data = await res.json()
+          const answer = data.content?.[0]?.text?.toUpperCase() || 'JA'
+          resolve(answer.includes('JA'))
+        } catch { resolve(true) }
+      }
+      reader.readAsDataURL(file)
+    })
   }
 
   async function submitAd() {
     if (!newAd.title || !newAd.price || !newAd.location) return
+    const banned = checkBannedWords(newAd.title + ' ' + newAd.description)
+    if (banned.length > 0) { setAdWarning(`Verboden woorden gevonden: ${banned.join(', ')}. Pas je advertentie aan.`); return }
+    setAdWarning('')
     setImgUploading(true)
-    let imgUrl = newAd.img || `https://placehold.co/300x200/e6f1fb/185fa5?text=${encodeURIComponent(newAd.title.slice(0, 8))}`
+    let imgUrl = `https://placehold.co/300x200/e6f1fb/185fa5?text=${encodeURIComponent(newAd.title.slice(0, 8))}`
     if (imgFile) {
+      const safe = await moderateImageWithAI(imgFile)
+      if (!safe) { setImgUploading(false); setAdWarning('Afbeelding afgekeurd door AI moderatie. Gebruik een andere afbeelding.'); return }
       const ext = imgFile.name.split('.').pop()
       const path = `${user.id}-${Date.now()}.${ext}`
       const { data: upData } = await supabase.storage.from('advertenties').upload(path, imgFile)
@@ -157,50 +175,81 @@ export default function Home() {
       }
     }
     setImgUploading(false)
-    await supabase.from('ads').insert({
-      ...newAd, price: Number(newAd.price), status: 'wachtrij',
-      seller_id: user.id, seller_name: profile?.name || user.email, img: imgUrl
-    })
+    await supabase.from('ads').insert({ ...newAd, price: Number(newAd.price), status: 'wachtrij', seller_id: user.id, seller_name: profile?.name || user.email, img: imgUrl })
     setAdSuccess(true)
-    setTimeout(() => { setAdSuccess(false); setNewAd({ title: '', price: '', category: 'Elektronica', location: '', description: '', img: '' }); setImgFile(null); setPage('home') }, 2500)
+    setTimeout(() => { setAdSuccess(false); setNewAd({ title: '', price: '', category: 'Elektronica', location: '', description: '' }); setImgFile(null); setPage('home') }, 2500)
   }
 
-  function toggleFavorite(id: number) {
-    setFavorites(p => p.includes(id) ? p.filter(f => f !== id) : [...p, id])
+  async function uploadIdDocument() {
+    if (!idFile || !user) return
+    setIdUploading(true)
+    const ext = idFile.name.split('.').pop()
+    const path = `id-${user.id}-${Date.now()}.${ext}`
+    const { data: upData } = await supabase.storage.from('advertenties').upload(path, idFile)
+    if (upData) {
+      const { data: urlData } = supabase.storage.from('advertenties').getPublicUrl(path)
+      await supabase.from('profiles').update({ id_image: urlData.publicUrl }).eq('id', user.id)
+      fetchProfile(user.id)
+      setIdSuccess(true)
+    }
+    setIdUploading(false)
   }
 
   async function approveAd(id: number) {
-    await supabase.from('ads').update({ status: 'goedgekeurd' }).eq('id', id)
-    fetchPending()
+    await supabase.from('ads').update({ status: 'goedgekeurd' }).eq('id', id); fetchPending()
   }
 
   async function rejectAd(id: number) {
-    await supabase.from('ads').delete().eq('id', id)
-    fetchPending()
+    await supabase.from('ads').delete().eq('id', id); fetchPending()
+  }
+
+  async function approveId(userId: string) {
+    await supabase.from('profiles').update({ id_verified: true }).eq('id', userId); fetchPending()
+  }
+
+  async function rejectId(userId: string) {
+    await supabase.from('profiles').update({ id_image: null }).eq('id', userId); fetchPending()
   }
 
   async function sendMsg() {
     if (!msgInput.trim() || !activeChat) return
     await supabase.from('messages').insert({ ad_id: activeChat.id, sender_id: user.id, sender_name: profile?.name || user.email, content: msgInput })
-    setMsgInput('')
-    fetchMessages(activeChat.id)
+    setMsgInput(''); fetchMessages(activeChat.id)
   }
 
   async function submitReport() {
     if (!reportReason || !selectedAd) return
     await supabase.from('reports').insert({ ad_id: selectedAd.id, reporter_id: user.id, reason: reportReason })
-    setReportSuccess(true)
-    setShowReport(false)
+    setReportSuccess(true); setShowReport(false)
     setTimeout(() => setReportSuccess(false), 3000)
   }
 
   async function submitReview() {
     if (!selectedAd || !newReview.comment) return
     await supabase.from('reviews').insert({ seller_id: selectedAd.seller_id, reviewer_id: user.id, reviewer_name: profile?.name || user.email, rating: newReview.rating, comment: newReview.comment })
-    setReviewSuccess(true)
-    setShowReview(false)
-    fetchReviews(selectedAd.seller_id)
+    setReviewSuccess(true); setShowReview(false); fetchReviews(selectedAd.seller_id)
     setTimeout(() => setReviewSuccess(false), 3000)
+  }
+
+  async function checkAdWithAI(ad: any) {
+    setAiLoading(true); setAiCheck(null)
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514', max_tokens: 300,
+          messages: [{ role: 'user', content: `Beoordeel deze marktplaats advertentie op veiligheid in het Nederlands. Geef: 1) Veilig of Verdacht, 2) Reden, 3) Aanbeveling. Titel: ${ad.title}, Prijs: €${ad.price}, Beschrijving: ${ad.description}` }]
+        })
+      })
+      const data = await res.json()
+      setAiCheck(data.content?.[0]?.text || 'Geen beoordeling.')
+    } catch { setAiCheck('AI niet beschikbaar.') }
+    setAiLoading(false)
+  }
+
+  function toggleFavorite(id: number) {
+    setFavorites(p => p.includes(id) ? p.filter(f => f !== id) : [...p, id])
   }
 
   const visibleAds = ads.filter(a => {
@@ -211,28 +260,29 @@ export default function Home() {
   })
 
   const avgRating = reviews.length ? (reviews.reduce((s, r) => s + r.rating, 0) / reviews.length).toFixed(1) : null
-
   const inp: any = { width: '100%', boxSizing: 'border-box', padding: '8px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, background: '#fff', color: '#1a1a1a' }
   const btn: any = { padding: '8px 16px', border: '1px solid #ddd', borderRadius: 8, cursor: 'pointer', fontSize: 14, background: '#fff', color: '#1a1a1a' }
   const btnP: any = { ...btn, background: '#185fa5', color: '#fff', border: 'none' }
   const btnR: any = { ...btn, background: '#e24b4a', color: '#fff', border: 'none' }
+  const btnG: any = { ...btn, background: '#3b6d11', color: '#fff', border: 'none' }
 
   return (
     <div style={{ fontFamily: 'sans-serif', minHeight: '100vh', background: '#f5f5f5', color: '#1a1a1a' }}>
-      {/* Nav */}
-      <nav style={{ background: '#fff', borderBottom: '1px solid #eee', padding: '0 20px', display: 'flex', alignItems: 'center', gap: 12, height: 52 }}>
+      <nav style={{ background: '#fff', borderBottom: '1px solid #eee', padding: '0 20px', display: 'flex', alignItems: 'center', gap: 12, height: 52, flexWrap: 'wrap' }}>
         <span onClick={() => setPage('home')} style={{ fontWeight: 600, fontSize: 18, cursor: 'pointer', color: '#185fa5' }}>Marktplaats</span>
         <div style={{ flex: 1 }} />
         {user && <button style={btn} onClick={() => setPage('place')}>+ Advertentie</button>}
+        {user && <button style={btn} onClick={() => setPage('profile')}>Mijn Profiel</button>}
         {profile?.role === 'admin' && (
           <button style={btn} onClick={() => { setPage('admin'); fetchPending(); fetchUsers(); fetchReports() }}>
-            Admin {pendingAds.length > 0 && <span style={{ background: '#e24b4a', color: '#fff', borderRadius: '50%', fontSize: 11, padding: '1px 5px', marginLeft: 4 }}>{pendingAds.length}</span>}
+            Admin {(pendingAds.length + pendingIds.length) > 0 && <span style={{ background: '#e24b4a', color: '#fff', borderRadius: '50%', fontSize: 11, padding: '1px 5px', marginLeft: 4 }}>{pendingAds.length + pendingIds.length}</span>}
           </button>
         )}
         {user && <button style={btn} onClick={() => setPage('messages')}>Berichten</button>}
         {user ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {user.email_confirmed_at && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ Geverifieerd</span>}
+            {profile?.id_verified && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ Geverifieerd</span>}
+            {user.email_confirmed_at && !profile?.id_verified && <span style={{ background: '#e6f1fb', color: '#185fa5', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✉ E-mail OK</span>}
             <button style={btn} onClick={logout}>{profile?.name || user.email} – Uitloggen</button>
           </div>
         ) : <button style={btnP} onClick={() => setPage('auth')}>Inloggen</button>}
@@ -255,7 +305,10 @@ export default function Home() {
               <div key={ad.id} onClick={() => { setSelectedAd(ad); fetchReviews(ad.seller_id); setPage('detail') }} style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, overflow: 'hidden', cursor: 'pointer' }}>
                 <img src={ad.img} alt={ad.title} style={{ width: '100%', height: 160, objectFit: 'cover' }} />
                 <div style={{ padding: 12 }}>
-                  <p style={{ margin: 0, fontWeight: 600 }}>{ad.title}</p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <p style={{ margin: 0, fontWeight: 600 }}>{ad.title}</p>
+                    <span onClick={e => { e.stopPropagation(); toggleFavorite(ad.id) }} style={{ cursor: 'pointer', fontSize: 18 }}>{favorites.includes(ad.id) ? '❤️' : '🤍'}</span>
+                  </div>
                   <p style={{ margin: '4px 0 0', color: '#185fa5', fontWeight: 600 }}>€{ad.price}</p>
                   <p style={{ margin: '4px 0 0', fontSize: 12, color: '#888' }}>{ad.location} · {ad.category}</p>
                 </div>
@@ -267,7 +320,7 @@ export default function Home() {
         {/* DETAIL */}
         {page === 'detail' && selectedAd && <>
           <button style={btn} onClick={() => setPage('home')}>← Terug</button>
-          {reportSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, marginTop: 12 }}>Rapport ingediend. Bedankt!</div>}
+          {reportSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, marginTop: 12 }}>Rapport ingediend!</div>}
           {reviewSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, marginTop: 12 }}>Review geplaatst!</div>}
           <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, marginTop: 16, overflow: 'hidden' }}>
             <img src={selectedAd.img} alt={selectedAd.title} style={{ width: '100%', maxHeight: 320, objectFit: 'cover' }} />
@@ -278,25 +331,21 @@ export default function Home() {
               <p style={{ marginTop: 12 }}>{selectedAd.description}</p>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
                 <p style={{ margin: 0, fontSize: 13, color: '#888' }}>Verkoper: <strong>{selectedAd.seller_name}</strong></p>
-                {avgRating && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 12, padding: '2px 8px', borderRadius: 12 }}>⭐ {avgRating} ({reviews.length} reviews)</span>}
+                {avgRating && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 12, padding: '2px 8px', borderRadius: 12 }}>⭐ {avgRating} ({reviews.length})</span>}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
                 {user && user.id !== selectedAd.seller_id && <>
                   <button style={btnP} onClick={() => { setActiveChat(selectedAd); fetchMessages(selectedAd.id); setPage('messages') }}>Stuur bericht</button>
-                  <button style={{ ...btn, color: '#854f0b', border: '1px solid #ef9f27' }} onClick={() => setShowReview(true)}>Review schrijven</button>
+                  <button style={{ ...btn, color: '#854f0b', border: '1px solid #ef9f27' }} onClick={() => setShowReview(true)}>Review</button>
                   <button style={btnR} onClick={() => setShowReport(true)}>Rapporteer</button>
                 </>}
                 {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}
               </div>
-
-              {/* Review formulier */}
               {showReview && (
                 <div style={{ marginTop: 16, padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
                   <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Review schrijven</p>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                    {[1,2,3,4,5].map(n => (
-                      <button key={n} onClick={() => setNewReview(p => ({ ...p, rating: n }))} style={{ ...btn, background: newReview.rating >= n ? '#ef9f27' : '#fff', color: newReview.rating >= n ? '#fff' : '#1a1a1a', padding: '4px 10px' }}>★</button>
-                    ))}
+                    {[1,2,3,4,5].map(n => <button key={n} onClick={() => setNewReview(p => ({ ...p, rating: n }))} style={{ ...btn, background: newReview.rating >= n ? '#ef9f27' : '#fff', color: newReview.rating >= n ? '#fff' : '#1a1a1a', padding: '4px 10px' }}>★</button>)}
                   </div>
                   <textarea style={{ ...inp, height: 80, marginBottom: 8 }} placeholder="Jouw ervaring..." value={newReview.comment} onChange={e => setNewReview(p => ({ ...p, comment: e.target.value }))} />
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -305,11 +354,9 @@ export default function Home() {
                   </div>
                 </div>
               )}
-
-              {/* Rapport formulier */}
               {showReport && (
                 <div style={{ marginTop: 16, padding: 16, background: '#fff5f5', borderRadius: 8, border: '1px solid #f09595' }}>
-                  <p style={{ margin: '0 0 8px', fontWeight: 600, color: '#a32d2d' }}>Advertentie rapporteren</p>
+                  <p style={{ margin: '0 0 8px', fontWeight: 600, color: '#a32d2d' }}>Rapporteer advertentie</p>
                   <select style={{ ...inp, marginBottom: 8 }} value={reportReason} onChange={e => setReportReason(e.target.value)}>
                     <option value="">Kies een reden...</option>
                     {REPORT_REASONS.map(r => <option key={r}>{r}</option>)}
@@ -320,18 +367,16 @@ export default function Home() {
                   </div>
                 </div>
               )}
-
-              {/* Reviews */}
               {reviews.length > 0 && (
                 <div style={{ marginTop: 24 }}>
-                  <p style={{ fontWeight: 600, marginBottom: 12 }}>Reviews over verkoper</p>
+                  <p style={{ fontWeight: 600, marginBottom: 12 }}>Reviews</p>
                   {reviews.map(r => (
-                    <div key={r.id} style={{ padding: 12, background: '#f9f9f9', borderRadius: 8, marginBottom: 8, border: '1px solid #eee' }}>
+                    <div key={r.id} style={{ padding: 12, background: '#f9f9f9', borderRadius: 8, marginBottom: 8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                         <strong style={{ fontSize: 14 }}>{r.reviewer_name}</strong>
                         <span style={{ color: '#ef9f27' }}>{'★'.repeat(r.rating)}{'☆'.repeat(5 - r.rating)}</span>
                       </div>
-                      <p style={{ margin: '4px 0 0', fontSize: 13, color: '#555' }}>{r.comment}</p>
+                      <p style={{ margin: '4px 0 0', fontSize: 13 }}>{r.comment}</p>
                     </div>
                   ))}
                 </div>
@@ -346,8 +391,8 @@ export default function Home() {
             {verifyEmailSent ? (
               <div style={{ textAlign: 'center' }}>
                 <p style={{ fontSize: 40 }}>📧</p>
-                <h3 style={{ fontWeight: 600 }}>Bevestig je e-mail</h3>
-                <p style={{ color: '#555', fontSize: 14 }}>We hebben een verificatielink gestuurd naar <strong>{regForm.email}</strong>. Klik op de link om je account te activeren.</p>
+                <h3>Bevestig je e-mail</h3>
+                <p style={{ color: '#555', fontSize: 14 }}>Verificatielink gestuurd naar <strong>{regForm.email}</strong></p>
                 <button style={btnP} onClick={() => { setVerifyEmailSent(false); setAuthMode('login') }}>Naar inloggen</button>
               </div>
             ) : <>
@@ -359,20 +404,73 @@ export default function Home() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <input style={inp} placeholder="E-mail" value={loginForm.email} onChange={e => setLoginForm(p => ({ ...p, email: e.target.value }))} />
                   <input style={inp} type="password" placeholder="Wachtwoord" value={loginForm.password} onChange={e => setLoginForm(p => ({ ...p, password: e.target.value }))} />
-                  {authErr && <p style={{ color: '#e24b4a', fontSize: 13, margin: 0 }}>{authErr}</p>}
+                  {authErr && <p style={{ color: '#e24b4a', fontSize: 13 }}>{authErr}</p>}
                   <button style={btnP} onClick={login}>Inloggen</button>
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <input style={inp} placeholder="Naam" value={regForm.name} onChange={e => setRegForm(p => ({ ...p, name: e.target.value }))} />
                   <input style={inp} placeholder="E-mail" value={regForm.email} onChange={e => setRegForm(p => ({ ...p, email: e.target.value }))} />
+                  <input style={inp} placeholder="Telefoonnummer (optioneel)" value={regForm.phone} onChange={e => setRegForm(p => ({ ...p, phone: e.target.value }))} />
                   <input style={inp} type="password" placeholder="Wachtwoord (min. 6 tekens)" value={regForm.password} onChange={e => setRegForm(p => ({ ...p, password: e.target.value }))} />
-                  {authErr && <p style={{ color: '#e24b4a', fontSize: 13, margin: 0 }}>{authErr}</p>}
+                  {authErr && <p style={{ color: '#e24b4a', fontSize: 13 }}>{authErr}</p>}
                   <button style={btnP} onClick={register}>Account aanmaken</button>
-                  <p style={{ fontSize: 12, color: '#888', margin: 0 }}>Je ontvangt een verificatie e-mail na registratie.</p>
+                  <p style={{ fontSize: 12, color: '#888' }}>Je ontvangt een verificatie e-mail na registratie.</p>
                 </div>
               )}
             </>}
+          </div>
+        </>}
+
+        {/* PROFILE */}
+        {page === 'profile' && user && <>
+          <h2 style={{ fontWeight: 600, marginBottom: 16 }}>Mijn Profiel</h2>
+          <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 24, maxWidth: 560 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
+              <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#e6f1fb', color: '#185fa5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 24 }}>{profile?.name?.[0] || '?'}</div>
+              <div>
+                <p style={{ margin: 0, fontWeight: 600, fontSize: 18 }}>{profile?.name}</p>
+                <p style={{ margin: 0, fontSize: 13, color: '#888' }}>{user.email}</p>
+                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                  {user.email_confirmed_at && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ E-mail geverifieerd</span>}
+                  {profile?.id_verified && <span style={{ background: '#e6f1fb', color: '#185fa5', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>✓ ID geverifieerd</span>}
+                  {profile?.phone && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 11, padding: '2px 8px', borderRadius: 12 }}>📱 {profile.phone}</span>}
+                </div>
+              </div>
+            </div>
+
+            {/* ID Verificatie */}
+            {!profile?.id_verified && (
+              <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee', marginBottom: 16 }}>
+                <p style={{ margin: '0 0 8px', fontWeight: 600 }}>ID Verificatie</p>
+                <p style={{ margin: '0 0 12px', fontSize: 13, color: '#555' }}>Upload een foto van je identiteitskaart of rijbewijs om een verificatiebadge te krijgen. Je ID wordt alleen door de admin bekeken.</p>
+                {profile?.id_image ? (
+                  <div style={{ background: '#faeeda', color: '#854f0b', padding: 12, borderRadius: 8, fontSize: 13 }}>
+                    Je ID is ingediend en wacht op goedkeuring van de admin.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <input type="file" accept="image/*" onChange={e => setIdFile(e.target.files?.[0] || null)} />
+                    {idSuccess && <p style={{ color: '#3b6d11', fontSize: 13 }}>ID succesvol ingediend!</p>}
+                    <button style={btnP} onClick={uploadIdDocument} disabled={!idFile || idUploading}>{idUploading ? 'Uploading...' : 'ID indienen'}</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Favorieten */}
+            <div>
+              <p style={{ fontWeight: 600, marginBottom: 12 }}>Mijn favorieten ({favorites.length})</p>
+              {favorites.length === 0 && <p style={{ color: '#888', fontSize: 13 }}>Nog geen favorieten. Klik op ❤️ bij een advertentie!</p>}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {ads.filter(a => favorites.includes(a.id)).map(ad => (
+                  <div key={ad.id} onClick={() => { setSelectedAd(ad); fetchReviews(ad.seller_id); setPage('detail') }} style={{ background: '#f9f9f9', border: '1px solid #eee', borderRadius: 8, padding: 10, cursor: 'pointer' }}>
+                    <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{ad.title}</p>
+                    <p style={{ margin: '2px 0 0', color: '#185fa5', fontSize: 13 }}>€{ad.price}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </>}
 
@@ -380,9 +478,10 @@ export default function Home() {
         {page === 'place' && <>
           <h2 style={{ fontWeight: 600, marginBottom: 16 }}>Advertentie plaatsen</h2>
           {adSuccess ? (
-            <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 16, borderRadius: 8 }}>Advertentie ingediend! Wacht op goedkeuring van admin.</div>
+            <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 16, borderRadius: 8 }}>Advertentie ingediend! Wacht op goedkeuring.</div>
           ) : (
             <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 24, maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {adWarning && <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13 }}>{adWarning}</div>}
               <input style={inp} placeholder="Titel*" value={newAd.title} onChange={e => setNewAd(p => ({ ...p, title: e.target.value }))} />
               <input style={inp} type="number" placeholder="Prijs (€)*" value={newAd.price} onChange={e => setNewAd(p => ({ ...p, price: e.target.value }))} />
               <select style={inp} value={newAd.category} onChange={e => setNewAd(p => ({ ...p, category: e.target.value }))}>
@@ -394,8 +493,8 @@ export default function Home() {
                 <p style={{ fontSize: 13, color: '#888', margin: '0 0 6px' }}>Foto uploaden:</p>
                 <input type="file" accept="image/*" onChange={e => setImgFile(e.target.files?.[0] || null)} />
               </div>
-              <p style={{ fontSize: 12, color: '#888', margin: 0 }}>Je advertentie wordt eerst nagekeken door een admin voor publicatie.</p>
-              <button style={btnP} onClick={submitAd} disabled={imgUploading}>{imgUploading ? 'Uploading...' : 'Indienen'}</button>
+              <p style={{ fontSize: 12, color: '#888', margin: 0 }}>Afbeeldingen worden automatisch gecontroleerd door AI. Advertenties worden nagekeken door admin.</p>
+              <button style={btnP} onClick={submitAd} disabled={imgUploading}>{imgUploading ? 'Controleren...' : 'Indienen'}</button>
             </div>
           )}
         </>}
@@ -406,7 +505,7 @@ export default function Home() {
           <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
             <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, overflow: 'hidden' }}>
               {activeChat ? (
-                <div style={{ padding: '12px 16px', background: '#e6f1fb', borderBottom: '1px solid #eee' }}>
+                <div style={{ padding: '12px 16px', background: '#e6f1fb' }}>
                   <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{activeChat.title}</p>
                 </div>
               ) : <p style={{ padding: 12, fontSize: 13, color: '#888' }}>Geen chats.</p>}
@@ -435,15 +534,8 @@ export default function Home() {
         {/* ADMIN */}
         {page === 'admin' && profile?.role === 'admin' && <>
           <h2 style={{ fontWeight: 600, marginBottom: 16 }}>Admin Dashboard</h2>
-
-          {/* Stats */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
-            {[
-              { label: 'Advertenties', value: ads.length },
-              { label: 'In wachtrij', value: pendingAds.length },
-              { label: 'Gebruikers', value: users.length },
-              { label: 'Rapporten', value: reports.length }
-            ].map(s => (
+            {[{ label: 'Advertenties', value: ads.length }, { label: 'In wachtrij', value: pendingAds.length }, { label: 'ID verificaties', value: pendingIds.length }, { label: 'Rapporten', value: reports.length }].map(s => (
               <div key={s.label} style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 16, textAlign: 'center' }}>
                 <p style={{ margin: 0, fontSize: 28, fontWeight: 700, color: '#185fa5' }}>{s.value}</p>
                 <p style={{ margin: '4px 0 0', fontSize: 13, color: '#888' }}>{s.label}</p>
@@ -451,8 +543,28 @@ export default function Home() {
             ))}
           </div>
 
-          {/* Wachtrij */}
-          <h3 style={{ fontWeight: 600 }}>Advertenties in wachtrij</h3>
+          {/* ID Verificaties */}
+          {pendingIds.length > 0 && <>
+            <h3 style={{ fontWeight: 600 }}>ID Verificaties ({pendingIds.length})</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
+              {pendingIds.map(u => (
+                <div key={u.id} style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 16, display: 'flex', gap: 16, alignItems: 'center' }}>
+                  <img src={u.id_image} alt="ID" style={{ width: 120, height: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
+                  <div style={{ flex: 1 }}>
+                    <p style={{ margin: 0, fontWeight: 600 }}>{u.name}</p>
+                    <p style={{ margin: '2px 0 0', fontSize: 13, color: '#888' }}>ID ingediend voor verificatie</p>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button style={btnG} onClick={() => approveId(u.id)}>Goedkeuren</button>
+                    <button style={btnR} onClick={() => rejectId(u.id)}>Afwijzen</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>}
+
+          {/* Advertenties wachtrij */}
+          <h3 style={{ fontWeight: 600 }}>Advertenties in wachtrij ({pendingAds.length})</h3>
           {pendingAds.length === 0 && <p style={{ color: '#888' }}>Geen advertenties in wachtrij.</p>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
             {pendingAds.map(ad => (
@@ -465,7 +577,7 @@ export default function Home() {
                     <p style={{ margin: '4px 0 0', fontSize: 13 }}>{ad.description}</p>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <button style={{ ...btn, color: '#3b6d11', border: '1px solid #639922' }} onClick={() => approveAd(ad.id)}>Goedkeuren</button>
+                    <button style={btnG} onClick={() => approveAd(ad.id)}>Goedkeuren</button>
                     <button style={btnR} onClick={() => rejectAd(ad.id)}>Afwijzen</button>
                     <button style={{ ...btn, fontSize: 12 }} onClick={() => checkAdWithAI(ad)}>AI Check</button>
                   </div>
@@ -499,14 +611,14 @@ export default function Home() {
               <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderBottom: '1px solid #eee' }}>
                 <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#e6f1fb', color: '#185fa5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 13 }}>{u.name?.[0] || '?'}</div>
                 <div style={{ flex: 1 }}>
-                  <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>{u.name}</p>
-                  <p style={{ margin: 0, fontSize: 12, color: '#888' }}>{u.role}</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>{u.name}</p>
+                    {u.id_verified && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>✓ ID</span>}
+                  </div>
+                  <p style={{ margin: 0, fontSize: 12, color: '#888' }}>{u.role} {u.phone && `· ${u.phone}`}</p>
                 </div>
                 {u.role !== 'admin' && (
-                  <button style={{ ...btn, fontSize: 12 }} onClick={async () => {
-                    await supabase.from('profiles').update({ role: 'admin' }).eq('id', u.id)
-                    fetchUsers()
-                  }}>Maak admin</button>
+                  <button style={{ ...btn, fontSize: 12 }} onClick={async () => { await supabase.from('profiles').update({ role: 'admin' }).eq('id', u.id); fetchUsers() }}>Maak admin</button>
                 )}
               </div>
             ))}
