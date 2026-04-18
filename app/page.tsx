@@ -170,7 +170,12 @@ export default function Home() {
     setAdSuccess(true)
     setTimeout(() => { setAdSuccess(false); setNewAd({ title: '', price: '', category: 'Elektronica', location: '', description: '' }); setImgFile(null); setPage('home') }, 2500)
   }
-
+async function deleteAd(id: number) {
+  if (!confirm('Weet je zeker dat je deze advertentie wilt verwijderen?')) return
+  await supabase.from('ads').delete().eq('id', id)
+  fetchAds()
+  setPage('home')
+}
   async function approveAd(id: number) {
     await supabase.from('ads').update({ status: 'goedgekeurd' }).eq('id', id); fetchPending()
   }
@@ -186,6 +191,12 @@ export default function Home() {
   async function rejectId(userId: string) {
     await supabase.from('profiles').update({ id_status: 'afgewezen', id_step1: null, id_step2: null, id_step3: null }).eq('id', userId); fetchPending()
   }
+async function deleteAd(id: number) {
+  if (!confirm('Weet je zeker dat je deze advertentie wilt verwijderen?')) return
+  await supabase.from('ads').delete().eq('id', id)
+  fetchAds()
+  setPage('home')
+}
 
   async function sendMsg() {
     if (!msgInput.trim() || !activeChat) return
@@ -322,7 +333,9 @@ export default function Home() {
                   <button style={{ ...btn, color: '#854f0b', border: '1px solid #ef9f27' }} onClick={() => setShowReview(true)}>Review</button>
                   <button style={btnR} onClick={() => setShowReport(true)}>Rapporteer</button>
                 </>}
-                {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}
+                {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}{user && user.id === selectedAd.seller_id && (
+  <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
+)}
               </div>
               {showReview && (
                 <div style={{ marginTop: 16, padding: 16, background: '#f9f9f9', borderRadius: 8 }}>
