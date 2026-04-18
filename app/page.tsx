@@ -8,7 +8,6 @@ const supabase = createClient(
 )
 
 const CATEGORIES = ['Alle', 'Elektronica', 'Kleding', 'Meubels', 'Voertuigen', 'Sport', 'Tuin', 'Boeken', 'Overig']
-const REPORT_REASONS = ['Oplichting', 'Verboden product', 'Misleidende beschrijving', 'Spam', 'Andere reden']
 const BANNED_WORDS = ['drugs', 'wapen', 'nep', 'fake', 'gestolen', 'illegaal']
 
 export default function Home() {
@@ -29,16 +28,10 @@ export default function Home() {
   const [imgFile, setImgFile] = useState<File | null>(null)
   const [imgUploading, setImgUploading] = useState(false)
   const [adWarning, setAdWarning] = useState('')
-  const [messages, setMessages] = useState<any[]>([])
-  const [msgInput, setMsgInput] = useState('')
-  const [activeChat, setActiveChat] = useState<any>(null)
   const [pendingAds, setPendingAds] = useState<any[]>([])
   const [pendingIds, setPendingIds] = useState<any[]>([])
   const [users, setUsers] = useState<any[]>([])
   const [reports, setReports] = useState<any[]>([])
-  const [showReport, setShowReport] = useState(false)
-  const [reportReason, setReportReason] = useState('')
-  const [reportSuccess, setReportSuccess] = useState(false)
   const [reviews, setReviews] = useState<any[]>([])
   const [showReview, setShowReview] = useState(false)
   const [newReview, setNewReview] = useState({ rating: 5, comment: '' })
@@ -88,11 +81,6 @@ export default function Home() {
     setReports(data || [])
   }
 
-  async function fetchMessages(adId: number) {
-    const { data } = await supabase.from('messages').select('*').eq('ad_id', adId).order('created_at')
-    setMessages(data || [])
-  }
-
   async function fetchReviews(sellerId: string) {
     const { data } = await supabase.from('reviews').select('*').eq('seller_id', sellerId).order('created_at', { ascending: false })
     setReviews(data || [])
@@ -133,49 +121,36 @@ export default function Home() {
   }
 
   async function submitIdVerification() {
-    if (!idStep1 || !idStep2 || !idStep3) { setIdError('Upload alle 3 de foto\'s om door te gaan.'); return }
-    setIdError('')
-    setIdUploading(true)
+    if (!idStep1 || !idStep2 || !idStep3) { setIdError("Upload alle 3 foto's om door te gaan."); return }
+    setIdError(''); setIdUploading(true)
     const url1 = await uploadFile(idStep1, 'id-doc')
     const url2 = await uploadFile(idStep2, 'id-selfie')
     const url3 = await uploadFile(idStep3, 'id-proof')
     if (!url1 || !url2 || !url3) { setIdError('Upload mislukt. Probeer opnieuw.'); setIdUploading(false); return }
     await supabase.from('profiles').update({ id_step1: url1, id_step2: url2, id_step3: url3, id_status: 'ingediend' }).eq('id', user.id)
-    fetchProfile(user.id)
-    setIdSuccess(true)
-    setIdUploading(false)
-  }
-
-  function checkBannedWords(text: string) {
-    return BANNED_WORDS.filter(w => text.toLowerCase().includes(w))
+    fetchProfile(user.id); setIdSuccess(true); setIdUploading(false)
   }
 
   async function submitAd() {
     if (!newAd.title || !newAd.price || !newAd.location) return
-    if (profile?.id_status !== 'goedgekeurd') {
-      setAdWarning('Je moet eerst je identiteit verifiëren voor je een advertentie kan plaatsen. Ga naar Mijn Profiel.')
-      return
-    }
-    const banned = checkBannedWords(newAd.title + ' ' + newAd.description)
-    if (banned.length > 0) { setAdWarning(`Verboden woorden gevonden: ${banned.join(', ')}`); return }
-    setAdWarning('')
-    setImgUploading(true)
+    if (profile?.id_status !== 'goedgekeurd') { setAdWarning('Verifieer eerst je identiteit via Mijn Profiel.'); return }
+    const banned = BANNED_WORDS.filter(w => (newAd.title + ' ' + newAd.description).toLowerCase().includes(w))
+    if (banned.length > 0) { setAdWarning(`Verboden woorden: ${banned.join(', ')}`); return }
+    setAdWarning(''); setImgUploading(true)
     let imgUrl = `https://placehold.co/300x200/e6f1fb/185fa5?text=${encodeURIComponent(newAd.title.slice(0, 8))}`
-    if (imgFile) {
-      const url = await uploadFile(imgFile, 'ad')
-      if (url) imgUrl = url
-    }
+    if (imgFile) { const url = await uploadFile(imgFile, 'ad'); if (url) imgUrl = url }
     setImgUploading(false)
     await supabase.from('ads').insert({ ...newAd, price: Number(newAd.price), status: 'wachtrij', seller_id: user.id, seller_name: profile?.name || user.email, img: imgUrl })
     setAdSuccess(true)
     setTimeout(() => { setAdSuccess(false); setNewAd({ title: '', price: '', category: 'Elektronica', location: '', description: '' }); setImgFile(null); setPage('home') }, 2500)
   }
-async function deleteAd(id: number) {
-  if (!confirm('Weet je zeker dat je deze advertentie wilt verwijderen?')) return
-  await supabase.from('ads').delete().eq('id', id)
-  fetchAds()
-  setPage('home')
-}
+
+  async function deleteAd(id: number) {
+    if (!confirm('Weet je zeker dat je deze advertentie wilt verwijderen?')) return
+    await supabase.from('ads').delete().eq('id', id)
+    fetchAds(); setPage('home')
+  }
+
   async function approveAd(id: number) {
     await supabase.from('ads').update({ status: 'goedgekeurd' }).eq('id', id); fetchPending()
   }
@@ -190,25 +165,6 @@ async function deleteAd(id: number) {
 
   async function rejectId(userId: string) {
     await supabase.from('profiles').update({ id_status: 'afgewezen', id_step1: null, id_step2: null, id_step3: null }).eq('id', userId); fetchPending()
-  }
-async function deleteAd(id: number) {
-  if (!confirm('Weet je zeker dat je deze advertentie wilt verwijderen?')) return
-  await supabase.from('ads').delete().eq('id', id)
-  fetchAds()
-  setPage('home')
-}
-
-  async function sendMsg() {
-    if (!msgInput.trim() || !activeChat) return
-    await supabase.from('messages').insert({ ad_id: activeChat.id, sender_id: user.id, sender_name: profile?.name || user.email, content: msgInput })
-    setMsgInput(''); fetchMessages(activeChat.id)
-  }
-
-  async function submitReport() {
-    if (!reportReason || !selectedAd) return
-    await supabase.from('reports').insert({ ad_id: selectedAd.id, reporter_id: user.id, reason: reportReason })
-    setReportSuccess(true); setShowReport(false)
-    setTimeout(() => setReportSuccess(false), 3000)
   }
 
   async function submitReview() {
@@ -273,7 +229,6 @@ async function deleteAd(id: number) {
             Admin {(pendingAds.length + pendingIds.length) > 0 && <span style={{ background: '#e24b4a', color: '#fff', borderRadius: '50%', fontSize: 11, padding: '1px 5px', marginLeft: 4 }}>{pendingAds.length + pendingIds.length}</span>}
           </button>
         )}
-        {user && <button style={btn} onClick={() => setPage('messages')}>Berichten</button>}
         {user ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {idStatusBadge()}
@@ -314,7 +269,6 @@ async function deleteAd(id: number) {
         {/* DETAIL */}
         {page === 'detail' && selectedAd && <>
           <button style={btn} onClick={() => setPage('home')}>← Terug</button>
-          {reportSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, marginTop: 12 }}>Rapport ingediend!</div>}
           {reviewSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, marginTop: 12 }}>Review geplaatst!</div>}
           <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, marginTop: 16, overflow: 'hidden' }}>
             <img src={selectedAd.img} alt={selectedAd.title} style={{ width: '100%', maxHeight: 320, objectFit: 'cover' }} />
@@ -328,16 +282,14 @@ async function deleteAd(id: number) {
                 {avgRating && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 12, padding: '2px 8px', borderRadius: 12 }}>⭐ {avgRating} ({reviews.length})</span>}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
-                {user && user.id !== selectedAd.seller_id && <>
-                  <button style={btnP} onClick={() => { setActiveChat(selectedAd); fetchMessages(selectedAd.id); setPage('messages') }}>Stuur bericht</button>
-                  <button style={{ ...btn, color: '#854f0b', border: '1px solid #ef9f27' }} onClick={() => setShowReview(true)}>Review</button>
-                  <button style={btnR} onClick={() => setShowReport(true)}>Rapporteer</button>
-                </>}
+                {user && user.id !== selectedAd.seller_id && (
+                  <button style={{ ...btn, color: '#854f0b', border: '1px solid #ef9f27' }} onClick={() => setShowReview(true)}>Review schrijven</button>
+                )}
+                {user && user.id === selectedAd.seller_id && (
+                  <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
+                )}
                 {!user && <p style={{ fontSize: 13, color: '#888' }}>Log in om contact op te nemen.</p>}
-{user && user.id === selectedAd.seller_id && (
-  <button style={btnR} onClick={() => deleteAd(selectedAd.id)}>Verwijder advertentie</button>
-)}
-</div>
+              </div>
               {showReview && (
                 <div style={{ marginTop: 16, padding: 16, background: '#f9f9f9', borderRadius: 8 }}>
                   <p style={{ margin: '0 0 8px', fontWeight: 600 }}>Review schrijven</p>
@@ -348,19 +300,6 @@ async function deleteAd(id: number) {
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button style={btnP} onClick={submitReview}>Plaatsen</button>
                     <button style={btn} onClick={() => setShowReview(false)}>Annuleren</button>
-                  </div>
-                </div>
-              )}
-              {showReport && (
-                <div style={{ marginTop: 16, padding: 16, background: '#fff5f5', borderRadius: 8 }}>
-                  <p style={{ margin: '0 0 8px', fontWeight: 600, color: '#a32d2d' }}>Rapporteer advertentie</p>
-                  <select style={{ ...inp, marginBottom: 8 }} value={reportReason} onChange={e => setReportReason(e.target.value)}>
-                    <option value="">Kies een reden...</option>
-                    {REPORT_REASONS.map(r => <option key={r}>{r}</option>)}
-                  </select>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button style={btnR} onClick={submitReport}>Rapporteer</button>
-                    <button style={btn} onClick={() => setShowReport(false)}>Annuleren</button>
                   </div>
                 </div>
               )}
@@ -436,69 +375,42 @@ async function deleteAd(id: number) {
               </div>
             </div>
 
-            {/* ID Verificatie sectie */}
             {profile?.id_status !== 'goedgekeurd' && (
               <div style={{ border: '1px solid #eee', borderRadius: 12, padding: 20, marginBottom: 20 }}>
                 <h3 style={{ margin: '0 0 8px', fontWeight: 600, fontSize: 16 }}>🔐 Identiteitsverificatie</h3>
-                <p style={{ margin: '0 0 16px', fontSize: 13, color: '#555' }}>
-                  Verifieer je identiteit om advertenties te kunnen plaatsen. Je moet 3 foto's uploaden.
-                </p>
-
+                <p style={{ margin: '0 0 16px', fontSize: 13, color: '#555' }}>Verifieer je identiteit om advertenties te kunnen plaatsen. Upload 3 foto's.</p>
                 {profile?.id_status === 'ingediend' && (
                   <div style={{ background: '#faeeda', color: '#854f0b', padding: 12, borderRadius: 8, fontSize: 13 }}>
-                    ⏳ Je verificatie is ingediend en wordt nagekeken door de admin. Dit kan 1-2 werkdagen duren.
+                    ⏳ Je verificatie is ingediend en wordt nagekeken door de admin.
                   </div>
                 )}
-
                 {profile?.id_status === 'afgewezen' && (
                   <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
                     ✗ Je verificatie is afgekeurd. Dien nieuwe foto's in.
                   </div>
                 )}
-
                 {(profile?.id_status === 'niet_ingediend' || profile?.id_status === 'afgewezen') && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-                    {/* Stap 1 */}
-                    <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#185fa5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13 }}>1</div>
-                        <p style={{ margin: 0, fontWeight: 600 }}>Foto van EU ID-kaart of Paspoort</p>
+                    {[
+                      { num: 1, title: 'Foto van EU ID-kaart of Paspoort', desc: 'Alleen Europese identiteitsdocumenten. Zorg dat alle gegevens leesbaar zijn.', set: setIdStep1, file: idStep1 },
+                      { num: 2, title: 'Selfie foto van jezelf', desc: 'Duidelijke selfie van je gezicht ter vergelijking met je ID.', set: setIdStep2, file: idStep2 },
+                      { num: 3, title: 'Foto met recente krant of Belgische/Nederlandse bon', desc: 'Bevestigt dat je je in België of Nederland bevindt.', set: setIdStep3, file: idStep3 },
+                    ].map(s => (
+                      <div key={s.num} style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                          <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#185fa5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13 }}>{s.num}</div>
+                          <p style={{ margin: 0, fontWeight: 600 }}>{s.title}</p>
+                        </div>
+                        <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>{s.desc}</p>
+                        <input type="file" accept="image/*" onChange={e => s.set(e.target.files?.[0] || null)} />
+                        {s.file && <p style={{ margin: '4px 0 0', fontSize: 12, color: '#3b6d11' }}>✓ {s.file.name}</p>}
                       </div>
-                      <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>Alleen Europese identiteitsdocumenten zijn toegestaan. Zorg dat alle gegevens duidelijk leesbaar zijn.</p>
-                      <input type="file" accept="image/*" onChange={e => setIdStep1(e.target.files?.[0] || null)} />
-                      {idStep1 && <p style={{ margin: '4px 0 0', fontSize: 12, color: '#3b6d11' }}>✓ {idStep1.name}</p>}
-                    </div>
-
-                    {/* Stap 2 */}
-                    <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#185fa5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13 }}>2</div>
-                        <p style={{ margin: 0, fontWeight: 600 }}>Selfie foto van jezelf</p>
-                      </div>
-                      <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>Maak een duidelijke selfie van je gezicht. Dit wordt vergeleken met je ID-foto om te bevestigen dat jij het bent.</p>
-                      <input type="file" accept="image/*" onChange={e => setIdStep2(e.target.files?.[0] || null)} />
-                      {idStep2 && <p style={{ margin: '4px 0 0', fontSize: 12, color: '#3b6d11' }}>✓ {idStep2.name}</p>}
-                    </div>
-
-                    {/* Stap 3 */}
-                    <div style={{ padding: 16, background: '#f9f9f9', borderRadius: 8, border: '1px solid #eee' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                        <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#185fa5', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13 }}>3</div>
-                        <p style={{ margin: 0, fontWeight: 600 }}>Foto met recente krant of Belgische/Nederlandse bon</p>
-                      </div>
-                      <p style={{ margin: '0 0 8px', fontSize: 12, color: '#888' }}>Houd een recente krant of kassabon van een Belgische of Nederlandse winkel vast. Dit bevestigt dat je je in België of Nederland bevindt.</p>
-                      <input type="file" accept="image/*" onChange={e => setIdStep3(e.target.files?.[0] || null)} />
-                      {idStep3 && <p style={{ margin: '4px 0 0', fontSize: 12, color: '#3b6d11' }}>✓ {idStep3.name}</p>}
-                    </div>
-
+                    ))}
                     {idError && <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13 }}>{idError}</div>}
-
                     <button style={{ ...btnP, opacity: (!idStep1 || !idStep2 || !idStep3) ? 0.5 : 1 }} onClick={submitIdVerification} disabled={idUploading || !idStep1 || !idStep2 || !idStep3}>
                       {idUploading ? 'Uploading...' : 'Verificatie indienen'}
                     </button>
-
-                    {idSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, fontSize: 13 }}>✓ Verificatie succesvol ingediend! De admin bekijkt je documenten.</div>}
+                    {idSuccess && <div style={{ background: '#eaf3de', color: '#3b6d11', padding: 12, borderRadius: 8, fontSize: 13 }}>✓ Ingediend! Admin bekijkt je documenten.</div>}
                   </div>
                 )}
               </div>
@@ -510,7 +422,6 @@ async function deleteAd(id: number) {
               </div>
             )}
 
-            {/* Favorieten */}
             <div>
               <p style={{ fontWeight: 600, marginBottom: 12 }}>Mijn favorieten ({favorites.length})</p>
               {favorites.length === 0 && <p style={{ color: '#888', fontSize: 13 }}>Nog geen favorieten. Klik op ❤️ bij een advertentie!</p>}
@@ -535,7 +446,7 @@ async function deleteAd(id: number) {
             <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, padding: 24, maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
               {profile?.id_status !== 'goedgekeurd' && (
                 <div style={{ background: '#fff5f5', color: '#a32d2d', padding: 12, borderRadius: 8, fontSize: 13 }}>
-                  ⚠️ Je moet eerst je identiteit verifiëren voor je een advertentie kan plaatsen.
+                  ⚠️ Je moet eerst je identiteit verifiëren.
                   <button style={{ ...btnP, marginLeft: 8, fontSize: 12, padding: '4px 10px' }} onClick={() => setPage('profile')}>Verifieer nu</button>
                 </div>
               )}
@@ -558,38 +469,6 @@ async function deleteAd(id: number) {
           )}
         </>}
 
-        {/* MESSAGES */}
-        {page === 'messages' && user && <>
-          <h2 style={{ fontWeight: 600, marginBottom: 16 }}>Berichten</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
-            <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, overflow: 'hidden' }}>
-              {activeChat ? (
-                <div style={{ padding: '12px 16px', background: '#e6f1fb' }}>
-                  <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{activeChat.title}</p>
-                </div>
-              ) : <p style={{ padding: 12, fontSize: 13, color: '#888' }}>Geen chats.</p>}
-            </div>
-            <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, display: 'flex', flexDirection: 'column' }}>
-              {activeChat ? <>
-                <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', fontWeight: 600 }}>{activeChat.title}</div>
-                <div style={{ flex: 1, padding: 16, minHeight: 200, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {messages.map((m, i) => (
-                    <div key={i} style={{ alignSelf: m.sender_id === user.id ? 'flex-end' : 'flex-start', background: m.sender_id === user.id ? '#185fa5' : '#f0f0f0', color: m.sender_id === user.id ? '#fff' : '#1a1a1a', padding: '8px 12px', borderRadius: 8, maxWidth: '70%', fontSize: 14 }}>
-                      <p style={{ margin: 0 }}>{m.content}</p>
-                      <p style={{ margin: '2px 0 0', fontSize: 11, opacity: 0.7 }}>{m.sender_name}</p>
-                    </div>
-                  ))}
-                  {messages.length === 0 && <p style={{ color: '#888', fontSize: 13 }}>Stuur je eerste bericht.</p>}
-                </div>
-                <div style={{ display: 'flex', gap: 8, padding: 12, borderTop: '1px solid #eee' }}>
-                  <input style={{ ...inp, flex: 1 }} placeholder="Schrijf een bericht..." value={msgInput} onChange={e => setMsgInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMsg()} />
-                  <button style={btnP} onClick={sendMsg}>Sturen</button>
-                </div>
-              </> : <div style={{ padding: 24, color: '#888' }}>Selecteer een gesprek.</div>}
-            </div>
-          </div>
-        </>}
-
         {/* ADMIN */}
         {page === 'admin' && profile?.role === 'admin' && <>
           <h2 style={{ fontWeight: 600, marginBottom: 16 }}>Admin Dashboard</h2>
@@ -602,7 +481,6 @@ async function deleteAd(id: number) {
             ))}
           </div>
 
-          {/* ID Verificaties */}
           {pendingIds.length > 0 && <>
             <h3 style={{ fontWeight: 600 }}>🔐 ID Verificaties ({pendingIds.length})</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
@@ -619,25 +497,18 @@ async function deleteAd(id: number) {
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                    <div>
-                      <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#555' }}>1. EU ID / Paspoort</p>
-                      <img src={u.id_step1} alt="ID" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
-                    </div>
-                    <div>
-                      <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#555' }}>2. Selfie</p>
-                      <img src={u.id_step2} alt="Selfie" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
-                    </div>
-                    <div>
-                      <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#555' }}>3. Krant / Bon</p>
-                      <img src={u.id_step3} alt="Bewijs" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
-                    </div>
+                    {[{ label: '1. EU ID / Paspoort', src: u.id_step1 }, { label: '2. Selfie', src: u.id_step2 }, { label: '3. Krant / Bon', src: u.id_step3 }].map(img => (
+                      <div key={img.label}>
+                        <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#555' }}>{img.label}</p>
+                        <img src={img.src} alt={img.label} style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, border: '1px solid #eee' }} />
+                      </div>
+                    ))}
                   </div>
                 </div>
               ))}
             </div>
           </>}
 
-          {/* Advertenties wachtrij */}
           <h3 style={{ fontWeight: 600 }}>Advertenties in wachtrij ({pendingAds.length})</h3>
           {pendingAds.length === 0 && <p style={{ color: '#888' }}>Geen advertenties in wachtrij.</p>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
@@ -667,7 +538,6 @@ async function deleteAd(id: number) {
             ))}
           </div>
 
-          {/* Rapporten */}
           <h3 style={{ fontWeight: 600 }}>Rapporten ({reports.length})</h3>
           {reports.length === 0 && <p style={{ color: '#888' }}>Geen rapporten.</p>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
@@ -678,7 +548,6 @@ async function deleteAd(id: number) {
             ))}
           </div>
 
-          {/* Gebruikers */}
           <h3 style={{ fontWeight: 600 }}>Gebruikers ({users.length})</h3>
           <div style={{ background: '#fff', border: '1px solid #eee', borderRadius: 12, overflow: 'hidden' }}>
             {users.map(u => (
@@ -688,7 +557,7 @@ async function deleteAd(id: number) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>{u.name}</p>
                     {u.id_status === 'goedgekeurd' && <span style={{ background: '#eaf3de', color: '#3b6d11', fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>✓ ID</span>}
-                    {u.id_status === 'ingediend' && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>⏳ In behandeling</span>}
+                    {u.id_status === 'ingediend' && <span style={{ background: '#faeeda', color: '#854f0b', fontSize: 10, padding: '1px 6px', borderRadius: 10 }}>⏳</span>}
                   </div>
                   <p style={{ margin: 0, fontSize: 12, color: '#888' }}>{u.role} {u.phone && `· ${u.phone}`}</p>
                 </div>
